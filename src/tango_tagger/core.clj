@@ -36,6 +36,12 @@
 (defn combine-path [first-part second-part]
   (.toString (java.nio.file.Paths/get first-part (into-array String [second-part]))))
 
+(defn normalize-unicode-to-ascii [str]
+  (-> (java.text.Normalizer/normalize str java.text.Normalizer$Form/NFKD)
+      (.replaceAll "—" "-")
+      (.replaceAll "\\p{InCombiningDiacriticalMarks}+" "")
+      (.replaceAll "\\p{Cntrl}+" "")))
+
 (defn write-custom-tag! [file tag-name value]
   (let [audio-file (org.jaudiotagger.audio.AudioFileIO/read file)]
     (let [tag (.getTagOrCreateAndSetDefault audio-file)]
@@ -138,32 +144,34 @@
 
 
 (defn fix-year [year]
-  (let [parts (if (.contains year "/")
-                (.split year "/")
-                [year])]
+  (let [parts (cond (.contains year "/") (.split year "/")
+                    (.contains year "-") (.split year "-")
+                    :elses [year])]
     (first (filter (fn [part]
-                     (and (= (.length part) 4)
-                          (every? #(Character/isDigit %) part)))
+                     (try
+                       (let [parsed-year (Integer. part)]
+                         (and (< parsed-year 2050) (> parsed-year 1900)))
+                       (catch Exception e
+                         false)))
                    parts))))
 
 (defn tag-file! [track track-info]
   (let [vocalist (when (not= (:vocalist track-info) "-")
-                   (:vocalist track-info))]
+                   (normalize-unicode-to-ascii (:vocalist track-info)))]
     (println "Tagging file " track)
     (println track-info)
 
-    (write-custom-tag! (io/file track) "Vocalist" vocalist)
     (write-custom-tag! (io/file track) "PerformanceDate" (:date track-info))
     (write-custom-tag! (io/file track) "WorkId" (:work-id track-info))
     (write-custom-tag! (io/file track) "TangoInfoTIN" (:tin track-info))
     (write-custom-tag! (io/file track) "TangoInfoTINT" (:tint track-info))
 
     (id3/write-tag! (io/file track)
-                    :artist (:orchestra track-info)
-                    :album-artist (:album-artist track-info)
-                    :artists (:artists track-info)
+                    :artist (normalize-unicode-to-ascii (:orchestra track-info))
+                    :album-artist (normalize-unicode-to-ascii (:album-artist track-info))
+                    :artists (normalize-unicode-to-ascii (:artists track-info))
                     :album (:album track-info)
-                    :title (:title track-info)
+                    :title (normalize-unicode-to-ascii (:title track-info))
                     :disc-no (:disc-no track-info)
                     :disc-total (:disc-total track-info)
                     :track (:track track-info)
@@ -174,9 +182,6 @@
                                     (:album-collection track-info))
                     :language (:language track-info)
                     :conductor (or vocalist "Instrumental")
-                    :is-compilation (if (= (:album-artist track-info) "Various Artists")
-                                      "1"
-                                      "0")
                     :year (when (>= (count (:year track-info)) 4)
                             (:year track-info)))))
 
@@ -202,6 +207,7 @@
              {k (let [fixed-tag-value (-> v
                                           (.replace "\uFFE1" "")
                                           (.replace "\uFFFF" "")
+                                          (.replace "\uFFFD" "")
                                           (.replace "\uFFE9" "e")
                                           (.replace "\uFFFA" "u")
                                           (.replace "\uFFF1" "n")
@@ -229,10 +235,6 @@
    (let [files (get-files root-folder)]
      (domap fix-file files))))
 
-(defn normalize-unicode-to-ascii [str]
-  (-> (java.text.Normalizer/normalize str java.text.Normalizer$Form/NFKD)
-      (.replaceAll "\\p{InCombiningDiacriticalMarks}+" "")
-      (.replaceAll "\\p{Cntrl}+" "")))
 
 (defn fix-unicode-filename [file]
   (let [file-obj (io/file file)
@@ -245,12 +247,9 @@
                   (.matches leaf-name "\\A\\p{ASCII}*\\z"))
       (println "Found non ASCII file " file))
     (when (not= leaf-name fixed-filename)
-      (if (not= (.length leaf-name) (.length fixed-filename))
-        (println "Suspcious normalization from " file " to " fixed-filename)
-        (do
           (.renameTo file-obj
                      (io/file (.getParentFile file-obj) fixed-filename))
-          (println "Renamed " (.toString file-obj) " to " fixed-filename))))))
+          (println "Renamed " (.toString file-obj) " to " fixed-filename))))
 
 
 (defn fix-unicode-filenames
